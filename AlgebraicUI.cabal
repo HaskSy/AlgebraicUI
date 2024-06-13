@@ -5,13 +5,13 @@ cabal-version: 2.2
 -- see: https://github.com/sol/hpack
 
 name:           AlgebraicUI
-version:        0.1.0.0
-description:    Please see the README on GitHub at <https://github.com/winter-yuki/mse-fp-hw14#readme>
-homepage:       https://github.com/winter-yuki/mse-fp-hw14#readme
-bug-reports:    https://github.com/winter-yuki/mse-fp-hw14/issues
-author:         Andrey Stoyan
-maintainer:     andrey.stoyan.csam@gmail.com
-copyright:      2023 Andrey Stoyan
+version:        0.0.0.1
+description:    none
+homepage:       https://github.com/HaskSy/AlgebraicUI#readme
+bug-reports:    https://github.com/HaskSy/AlgebraicUI/issues
+author:         Sergey Kovaltsov
+maintainer:     sergeykovaltsov@gmail.com
+copyright:      2024 Andrey Stoyan
 license:        BSD-3-Clause
 license-file:   LICENSE
 build-type:     Simple
@@ -20,7 +20,7 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/winter-yuki/mse-fp-hw14
+  location: https://github.com/HaskSy/AlgebraicUI
 
 library
   exposed-modules:

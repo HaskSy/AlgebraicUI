@@ -1,5 +1,9 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ImpredicativeTypes #-}
+
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE StarIsType #-}
 
 module Lib.Effects where
 
@@ -13,6 +17,9 @@ import Data.Functor.Identity
 import Debug.Trace (traceId, traceShow, traceShowM)
 import GHC.Base (undefined)
 import Utils
+import Foreign (IntPtr(IntPtr))
+import Data.Map
+import Data.Proxy
 
 data Free f a = Pure a | Impure (f (Free f a)) deriving (Functor)
 
@@ -31,28 +38,18 @@ instance (Functor f) => Monad (Free f) where
 -- | Тип монады, в которой будут доступны все эффекты из effs.
 type Eff effs a = Free effs a
 
+infixr :+:
 data (eff :+: effs) a = L (eff a) | R (effs a) deriving (Functor)
 
--- Scope???
 
-data Lift eff a where
-  Lift :: (eff a) -> Lift eff a
-  deriving (Functor)
-
-type EffLifted effs a = Free (Lift effs) a
-
--- liftEff :: (Functor effs) => Eff effs a -> EffLifted effs a
--- liftEff = \case
---     Pure x -> Pure x
-
-liftHigherEff :: (Functor effs1, Functor effs2) => EffLifted effs1 a -> EffLifted (effs1 :+: effs2) a
-liftHigherEff (Pure x) = Pure x
-liftHigherEff (Impure (Lift eff)) = Impure $ Lift $ L $ liftHigherEff <$> eff
--- Is it scope???
-
--- "syntah highlighting line"
+-- "syntax highlighting line"
 liftF :: (Functor effs) => Eff effs a -> Eff (eff :+: effs) a
 liftF = \case
+  Pure x -> Pure x
+  Impure effs -> Impure $ R $ liftF <$> effs
+
+liftOfDespairF ::(Functor effs) => Eff effs a -> Proxy eff -> Eff (eff :+: effs) a
+liftOfDespairF eff proxy = case eff of
   Pure x -> Pure x
   Impure effs -> Impure $ R $ liftF <$> effs
 
@@ -135,9 +132,9 @@ logEff msg = Impure $ L $ Log msg Pure
 -- Generator Effect
 data GeneratorEff a comp = Yield a (() -> comp) deriving (Functor)
 
-runGeneratorEff :: (Functor effs) => Eff (GeneratorEff a :+: effs) () -> Eff effs [a]
+runGeneratorEff :: (Functor effs) => Eff (GeneratorEff a :+: effs) x -> Eff effs [a]
 runGeneratorEff = \case
-  Pure () -> pure []
+  Pure _ -> pure []
   Impure (L (Yield x comp)) -> do
     xs <- runGeneratorEff (comp ())
     Pure (x : xs)
@@ -189,84 +186,101 @@ prettyPrint level = \case
 instance (Show m) => Show (UITree m) where
   show = prettyPrint 0
 
+-- Metadata for styling nodes
 data Modifiers where
   Modifiers :: {color :: String} -> Modifiers
   deriving (Show)
 
--- newtype BreakEff comp = Break comp deriving (Functor)
---
--- runBreakEff :: (Functor effs) => Eff (BreakEff :+: effs) m -> Eff EmptyEff (Eff effs m)
--- runBreakEff = \case
---     Pure _ -> pure mempty
---     Impure (L (Break t)) -> pure t
---     Impure (R effs) -> Impure $ runBreakEff <$> effs
---
--- breakEff :: c -> Eff (BreakEff :+: effs) c
--- breakEff cont = Impure $ L (Break cont)
-
--- data ForgetEff comp where
---   Forget :: ForgetEff comp
---   deriving (Functor)
---
--- runForgetEff :: (Functor effs) => Eff (ForgetEff :+: effs) m -> Eff effs ()
--- runForgetEff = \case
---     Pure _ -> pure ()
---     Impure (L Forget) -> pure ()
---     Impure (R effs) -> Impure $ runForgetEff <$> effs
---
--- forgetEff :: Eff (ForgetEff :+: effs) ()
--- forgetEff = Impure $ L Forget
-
--- UI Effects
-
--- m - modifiers
-data ComponentEff m comp
-  = CLeaf m comp
-  | CNode m comp comp
-  | CSingleNode m comp comp
-  deriving (Functor)
-
-runComponentEff ::
-  (Show m, Monoid m, Functor effs) =>
-  Eff (ComponentEff m :+: effs) () ->
-  Eff effs (UITree m)
-runComponentEff = \case
-  Pure () -> pure mempty
-  Impure (L t) -> case t of
-    CLeaf a cont -> do
-      res <- runComponentEff cont
-      pure $ UILeaf a <> res
-    CNode a subcont cont -> do
-      undefined
-    CSingleNode a subcont cont -> do
-      res <- runComponentEff subcont
-      -- traceShowM res
-      res' <- runComponentEff cont
-      pure $ UISingleNode a res <> res'
-  Impure (R effs) -> Impure $ runComponentEff <$> effs
-
-leafEff :: m -> Eff (ComponentEff m :+: effs) ()
-leafEff x = Impure $ L $ CLeaf x (Pure ())
-
-nestedEff ::
-  m ->
-  Eff (ComponentEff m :+: effs) () ->
-  Eff (ComponentEff m :+: effs) ()
-nestedEff m eff = Impure $ L $ CSingleNode m eff (Pure ())
-
-leafEff' ::
+leafEff ::
   m ->
   Eff (GeneratorEff (UITree m) :+: effs) ()
-leafEff' m = yieldEff $ UILeaf m
+leafEff m = yieldEff $ UILeaf m
 
-nestedEff' ::
+nestedEff ::
   (Monoid m) =>
   m ->
   Eff (GeneratorEff (UITree m) :+: EmptyEff) () ->
   Eff (GeneratorEff (UITree m) :+: effs) ()
-nestedEff' m eff = do
+nestedEff m eff = do
   let subeff = runEmptyEff $ runGeneratorEff eff
   if length subeff == 1
     then yieldEff $ UISingleNode m (head subeff)
     else yieldEff $ UISingleNode m (UINode mempty subeff)
 
+-- After Meeting
+
+-- IncrementEff
+
+-- Used to give unique identifiers for buttons. 
+-- Yes, in could be done using StateEff Int and even was, 
+-- but I decided to make separate effect in case of switching to open union
+data IncrementEff comp where
+  Increment :: (Int -> comp) -> IncrementEff comp
+  deriving (Functor)
+
+increment :: Eff (IncrementEff :+: effs) Int
+increment = Impure $ L $ Increment Pure
+
+runIncrementEff :: (Functor effs) => Eff (IncrementEff :+: effs) a -> Eff effs Int
+runIncrementEff = runIncrementEff' 0
+  where
+    runIncrementEff' :: (Functor effs) => Int -> Eff (IncrementEff :+: effs) a -> Eff effs Int
+    runIncrementEff' init comp = case comp of
+      Pure _ -> Pure init
+      Impure (L (Increment cont)) -> runIncrementEff' (init + 1) $ cont init
+      Impure (R effs) -> Impure $ runIncrementEff' init <$> effs
+
+-- <IncrementEff>
+
+-- EffectRegistryEff
+
+data EffectRegistryEff id cb comp
+  = Register id cb (() -> comp)
+  | Obtain id (cb -> comp)
+  deriving (Functor)
+
+register :: id -> cb -> Eff (EffectRegistryEff id cb :+: effs) ()
+register id callback = Impure $ L $ Register id callback Pure
+
+obtain :: id -> Eff (EffectRegistryEff id cb :+: effs) cb
+obtain id = Impure $ L $ Obtain id Pure
+
+type Registry id cb = Map id cb
+
+runEffectRegistryEff :: (Functor effs, Ord id) => Eff (EffectRegistryEff id cb :+: effs) a -> Eff effs (a, Registry id cb)
+runEffectRegistryEff = flip runEffectRegistryEff' empty
+    where
+    runEffectRegistryEff' :: (Functor effs, Ord id) => Eff (EffectRegistryEff id cb :+: effs) a -> Registry id cb -> Eff effs (a, Registry id cb)
+    runEffectRegistryEff' comp registry = case comp of
+      Pure x -> Pure (x, registry)
+      Impure (L op) -> case op of
+        Register id cb cont -> runEffectRegistryEff' (cont ()) (Data.Map.insert id cb registry)
+        Obtain id cont -> case Data.Map.lookup id registry of
+          Just cb -> runEffectRegistryEff' (cont cb) registry
+          Nothing -> error "Callback not found" -- I definitely need to handle it more gracefully, but not now
+      Impure (R effs) -> Impure $ (`runEffectRegistryEff'` registry) <$> effs
+
+
+-- Type sum alias of effects available in all button callbacks
+type CallbackEffs = forall s. StateEff s
+-- Type alias just to make sure callback do not have return values
+type Callback = Eff CallbackEffs ()
+
+button :: (Functor effs) => Callback ->
+    Eff (
+        EffectRegistryEff Int Callback
+        :+: IncrementEff
+        :+: GeneratorEff (UITree String)
+        :+: effs) ()
+button callback = do
+    id <- increment''
+    traceShowM id
+    register id callback
+    yieldEff' $ UILeaf ("Button " ++ show id)
+    where yieldEff' = liftF . liftF . yieldEff
+          increment' :: Eff (EffectRegistryEff Int Callback :+: IncrementEff :+: effs) Int
+          increment' =  liftF increment
+
+          -- How the hell is that not working...
+          increment'' :: Eff (EffectRegistryEff Int Callback :+: IncrementEff :+: effs) Int
+          increment'' =  liftOfDespairF increment (Proxy @(EffectRegistryEff Int Callback))
