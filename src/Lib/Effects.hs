@@ -297,32 +297,32 @@ mutateVar :: Typeable a =>
     String -> (a -> a) -> Eff (VarsEff :+: effs) a
 mutateVar name fun = Impure $ L $ Mutate name fun Pure
 
-runVars :: (Functor effs, Typeable a) => 
+runVarsEff :: (Functor effs, Typeable a) => 
     Eff (VarsEff :+: effs) a -> 
     Eff effs (a, GlobalState)
-runVars = flip runVars' empty
+runVarsEff = flip runVarsEff' empty
 
-runVars' :: (Functor effs, Typeable a) => 
+runVarsEff' :: (Functor effs, Typeable a) => 
     Eff (
         VarsEff 
         :+: effs) a ->
     GlobalState ->
     Eff effs (a, GlobalState)
-runVars' comp state = case comp of
+runVarsEff' comp state = case comp of
   Pure x -> Pure (x, state)
   Impure (L op) -> case op of
-    Write name val cont -> runVars' (cont ()) (Data.Map.insert name val state)
+    Write name val cont -> runVarsEff' (cont ()) (Data.Map.insert name val state)
     Read name cont -> case Data.Map.lookup name state >>= fromDynamic of
-      Just cb -> runVars' (cont cb) state
+      Just cb -> runVarsEff' (cont cb) state
       Nothing -> error "Cannot find variable with this name or cannot deduce type" -- I definitely need to handle it more gracefully, but not now
     Mutate name f cont -> case Data.Map.lookup name state >>= fromDynamic of
       Just cb ->
         let 
             res = f cb
             state' = Data.Map.insert name (toDyn res) state
-        in runVars' (cont res) state'
+        in runVarsEff' (cont res) state'
       Nothing -> error "Cannot find variable with this name or cannot deduce type" -- I definitely need to handle it more gracefully, but not now
-  Impure (R effs) -> Impure $ (`runVars'` state) <$> effs
+  Impure (R effs) -> Impure $ (`runVarsEff'` state) <$> effs
 
 -- mutateVar :: Typeable a => String -> (a -> a) -> Eff (VarsEff :+: effs) a
 -- mutateVar name func = Impure $ L $ Mutate name func Pure
@@ -334,7 +334,7 @@ type CallbackEffs = VarsEff :+: EmptyEff
 type Callback = Eff CallbackEffs ()
 
 runCallbackEffs :: GlobalState -> Callback -> GlobalState
-runCallbackEffs st callback = snd $ runEmptyEff $ runVars' callback st
+runCallbackEffs st callback = snd $ runEmptyEff $ runVarsEff' callback st
 
 button :: (Functor effs) => Callback ->
     Eff (
@@ -344,7 +344,7 @@ button :: (Functor effs) => Callback ->
         :+: effs) ()
 button callback = do
     id <- increment'
-    traceShowM id
+    -- traceShowM id
     register' id callback
     yieldEff' $ UILeaf ("Button " ++ show id)
     where yieldEff' = liftF . yieldEff

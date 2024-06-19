@@ -2,7 +2,7 @@ module Testing where
 
 import Control.Monad (replicateM_)
 import Data.Bool (bool)
-import Debug.Trace (traceIO, traceShow, traceShowM, traceM)
+import Debug.Trace (traceIO, traceShow, traceShowM, traceM, trace)
 import Lib.Effects
 import Lib.Events
 import Data.Map
@@ -43,23 +43,50 @@ uiTreeEff' = do
     outer x = if length x == 1 then head x else UINode mempty x
 
 
-uiTreeButtons :: ([UITree String], Registry Int Callback)
-uiTreeButtons = do
+uiTreeButtons :: GlobalState -> ([UITree String], Registry Int Callback)
+uiTreeButtons state = do
     applyEffects $ do
         leafEff' "Apple"
-        button do 
+        button' do
             writeVar "a" (0 :: Int)
             return ()
-        button do 
+        button' do
             _ <- mutateVar "a" ((+ 1) :: (Int -> Int))
             return ()
-        button do 
+        button' do
             _ <- mutateVar "a" ((+ 3) :: (Int -> Int))
             return ()
+        buttonList
         leafEff' "Apple2"
     where
-        leafEff' = liftF . leafEff
-        applyEffects = runEmptyEff . runEffectRegistryEff . runGeneratorEff . runIncrementEff
+        button' callback = liftF $ button callback
+        leafEff' = liftF . liftF . leafEff
+        applyEffects = runEmptyEff .  runEffectRegistryEff . runGeneratorEff . runIncrementEff . flip runVarsEff' state
+
+
+buttonList :: Functor effs => Eff (
+    VarsEff
+    :+: IncrementEff
+    :+: GeneratorEff (UITree String)
+    :+: EffectRegistryEff Int Callback :+:
+    effs)   ()
+buttonList = do
+    count :: Int <- readVar "a"
+    if even count then
+        button' do
+            return ()
+    else
+        do
+        button' do
+            return ()
+        button' do
+            return ()
+        button' do
+            return ()
+        button' do
+            return ()
+    where
+        button' callback = liftF $ button callback
 
 
 clickAt :: IORef GlobalState -> IORef (Registry Int Callback) -> Int -> IO ()
@@ -72,15 +99,19 @@ clickAt stateRef regRef i = do
 
 uiLoop :: EventManager -> IORef GlobalState -> IORef (Registry Int Callback) -> IO ()
 uiLoop eventManager stateRef registryRef = do
-    let (tree, registry) = uiTreeButtons
+    state <- readIORef stateRef
+    let (tree, registry) = uiTreeButtons state
     writeIORef registryRef registry
     simulateClick eventManager 1 -- TODO remove later
+    traceIO $ show tree
     uiLoop eventManager stateRef registryRef
 
 uiEntryPoint :: IO ()
 uiEntryPoint = do
-  let (tree, registry) = uiTreeButtons
   stateRef <- newIORef empty
+  writeIORef stateRef $ Data.Map.insert "a" (toDyn (0 :: Int)) empty
+  state <- readIORef stateRef
+  let (tree, registry) = uiTreeButtons state
   registryRef <- newIORef registry
   eventManager <- initEventManager
 
