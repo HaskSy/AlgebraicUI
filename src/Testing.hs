@@ -4,6 +4,10 @@ import Control.Monad (replicateM_)
 import Data.Bool (bool)
 import Debug.Trace (traceIO, traceShow, traceShowM, traceM)
 import Lib.Effects
+import Lib.Events
+import Data.Map
+import Data.IORef
+import Data.Dynamic
 
 whileM :: (Monad m) => m Bool -> m () -> m ()
 whileM cond body = cond >>= bool (pure ()) (body >> whileM cond body)
@@ -39,21 +43,56 @@ uiTreeEff' = do
     outer x = if length x == 1 then head x else UINode mempty x
 
 
-uiTreeButtons :: [UITree String]
+uiTreeButtons :: ([UITree String], Registry Int Callback)
 uiTreeButtons = do
     applyEffects $ do
         leafEff' "Apple"
-        -- button
-        -- button
-        -- button 
+        button do 
+            writeVar "a" (0 :: Int)
+            return ()
+        button do 
+            _ <- mutateVar "a" ((+ 1) :: (Int -> Int))
+            return ()
+        button do 
+            _ <- mutateVar "a" ((+ 3) :: (Int -> Int))
+            return ()
         leafEff' "Apple2"
     where
         leafEff' = liftF . leafEff
-        applyEffects = runEmptyEff . runGeneratorEff . runIncrementEff
+        applyEffects = runEmptyEff . runEffectRegistryEff . runGeneratorEff . runIncrementEff
 
 
-uiLoop :: IO ()
-uiLoop = do
-    print uiTreeButtons
-    uiLoop
+clickAt :: IORef GlobalState -> IORef (Registry Int Callback) -> Int -> IO ()
+clickAt stateRef regRef i = do
+    state <- readIORef stateRef
+    reg <- readIORef regRef
+    let callback = reg ! i
+        state' = runCallbackEffs state callback
+    writeIORef stateRef state'
 
+uiLoop :: EventManager -> IORef GlobalState -> IORef (Registry Int Callback) -> IO ()
+uiLoop eventManager stateRef registryRef = do
+    let (tree, registry) = uiTreeButtons
+    writeIORef registryRef registry
+    simulateClick eventManager 1 -- TODO remove later
+    uiLoop eventManager stateRef registryRef
+
+uiEntryPoint :: IO ()
+uiEntryPoint = do
+  let (tree, registry) = uiTreeButtons
+  stateRef <- newIORef empty
+  registryRef <- newIORef registry
+  eventManager <- initEventManager
+
+  let clickHandler (Click i) = do
+        putStrLn $ "Click event triggered for button: " ++ show i
+        clickAt stateRef registryRef i
+        state <- readIORef stateRef
+        let looked = (Data.Map.lookup "a" state >>= fromDynamic :: Maybe Int)
+        putStrLn $ show looked
+
+  registerHandler eventManager clickHandler
+
+  simulateClick eventManager 0
+
+  uiLoop eventManager stateRef registryRef

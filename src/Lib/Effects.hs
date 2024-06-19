@@ -2,7 +2,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImpredicativeTypes #-}
 
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE StarIsType #-}
 
 module Lib.Effects where
@@ -15,11 +14,12 @@ import Control.SimpleMonad
 import Data.Bool (bool)
 import Data.Functor.Identity
 import Debug.Trace (traceId, traceShow, traceShowM)
-import GHC.Base (undefined)
+import GHC.Base (undefined, Any)
 import Utils
 import Foreign (IntPtr(IntPtr))
 import Data.Map
 import Data.Proxy
+import Data.Dynamic (Dynamic (Dynamic), fromDynamic, toDyn)
 
 data Free f a = Pure a | Impure (f (Free f a)) deriving (Functor)
 
@@ -247,40 +247,107 @@ obtain id = Impure $ L $ Obtain id Pure
 
 type Registry id cb = Map id cb
 
-runEffectRegistryEff :: (Functor effs, Ord id) => Eff (EffectRegistryEff id cb :+: effs) a -> Eff effs (a, Registry id cb)
+runEffectRegistryEff :: 
+    (Functor effs, Ord id) =>
+    Eff (
+        EffectRegistryEff id cb 
+        :+: effs) a ->
+    Eff effs (a, Registry id cb)
 runEffectRegistryEff = flip runEffectRegistryEff' empty
-    where
-    runEffectRegistryEff' :: (Functor effs, Ord id) => Eff (EffectRegistryEff id cb :+: effs) a -> Registry id cb -> Eff effs (a, Registry id cb)
-    runEffectRegistryEff' comp registry = case comp of
-      Pure x -> Pure (x, registry)
-      Impure (L op) -> case op of
-        Register id cb cont -> runEffectRegistryEff' (cont ()) (Data.Map.insert id cb registry)
-        Obtain id cont -> case Data.Map.lookup id registry of
-          Just cb -> runEffectRegistryEff' (cont cb) registry
-          Nothing -> error "Callback not found" -- I definitely need to handle it more gracefully, but not now
-      Impure (R effs) -> Impure $ (`runEffectRegistryEff'` registry) <$> effs
 
+runEffectRegistryEff' :: 
+    (Functor effs, Ord id) => 
+    Eff (
+        EffectRegistryEff id cb 
+        :+: effs) a -> 
+    Registry id cb ->
+    Eff effs (a, Registry id cb)
+runEffectRegistryEff' comp registry = case comp of
+  Pure x -> Pure (x, registry)
+  Impure (L op) -> case op of
+    Register id cb cont -> runEffectRegistryEff' (cont ()) (Data.Map.insert id cb registry)
+    Obtain id cont -> case Data.Map.lookup id registry of
+      Just cb -> runEffectRegistryEff' (cont cb) registry
+      Nothing -> error "Callback not found" -- I definitely need to handle it more gracefully, but not now
+  Impure (R effs) -> Impure $ (`runEffectRegistryEff'` registry) <$> effs
+
+
+-- I'll add separate state as it supposed to handle Dynamic implicitly for user
+data VarsEff comp where
+  Write :: String -> Dynamic -> (() -> comp) -> VarsEff comp
+  Read :: Typeable a => String -> (a -> comp) -> VarsEff comp
+  Mutate :: Typeable a => String -> (a -> a) -> (a -> comp) -> VarsEff comp
+
+instance Functor VarsEff where -- Existantial vars is a mess
+  fmap f (Write s d k) = Write s d (f . k)
+  fmap f (Read s k) = Read s (f . k)
+  fmap f (Mutate s g k) = Mutate s g (f . k)
+
+type GlobalState = Map String Dynamic
+
+readVar :: Typeable a => 
+    String -> Eff (VarsEff :+: effs) a
+readVar name = Impure $ L $ Read name Pure
+
+writeVar :: Typeable a => 
+    String -> a -> Eff (VarsEff :+: effs) ()
+writeVar name val = Impure $ L $ Write name (toDyn val) Pure
+
+mutateVar :: Typeable a => 
+    String -> (a -> a) -> Eff (VarsEff :+: effs) a
+mutateVar name fun = Impure $ L $ Mutate name fun Pure
+
+runVars :: (Functor effs, Typeable a) => 
+    Eff (VarsEff :+: effs) a -> 
+    Eff effs (a, GlobalState)
+runVars = flip runVars' empty
+
+runVars' :: (Functor effs, Typeable a) => 
+    Eff (
+        VarsEff 
+        :+: effs) a ->
+    GlobalState ->
+    Eff effs (a, GlobalState)
+runVars' comp state = case comp of
+  Pure x -> Pure (x, state)
+  Impure (L op) -> case op of
+    Write name val cont -> runVars' (cont ()) (Data.Map.insert name val state)
+    Read name cont -> case Data.Map.lookup name state >>= fromDynamic of
+      Just cb -> runVars' (cont cb) state
+      Nothing -> error "Cannot find variable with this name or cannot deduce type" -- I definitely need to handle it more gracefully, but not now
+    Mutate name f cont -> case Data.Map.lookup name state >>= fromDynamic of
+      Just cb ->
+        let 
+            res = f cb
+            state' = Data.Map.insert name (toDyn res) state
+        in runVars' (cont res) state'
+      Nothing -> error "Cannot find variable with this name or cannot deduce type" -- I definitely need to handle it more gracefully, but not now
+  Impure (R effs) -> Impure $ (`runVars'` state) <$> effs
+
+-- mutateVar :: Typeable a => String -> (a -> a) -> Eff (VarsEff :+: effs) a
+-- mutateVar name func = Impure $ L $ Mutate name func Pure
+-- type Global = Map String Dynamic
 
 -- Type sum alias of effects available in all button callbacks
-type CallbackEffs = forall s. StateEff s
+type CallbackEffs = VarsEff :+: EmptyEff
 -- Type alias just to make sure callback do not have return values
 type Callback = Eff CallbackEffs ()
 
+runCallbackEffs :: GlobalState -> Callback -> GlobalState
+runCallbackEffs st callback = snd $ runEmptyEff $ runVars' callback st
+
 button :: (Functor effs) => Callback ->
     Eff (
-        EffectRegistryEff Int Callback
-        :+: IncrementEff
+        IncrementEff
         :+: GeneratorEff (UITree String)
+        :+: EffectRegistryEff Int Callback
         :+: effs) ()
 button callback = do
-    id <- increment''
+    id <- increment'
     traceShowM id
-    register id callback
+    register' id callback
     yieldEff' $ UILeaf ("Button " ++ show id)
-    where yieldEff' = liftF . liftF . yieldEff
-          increment' :: Eff (EffectRegistryEff Int Callback :+: IncrementEff :+: effs) Int
-          increment' =  liftF increment
+    where yieldEff' = liftF . yieldEff
+          increment' = increment
+          register' a b = liftF . liftF $ register a b
 
-          -- How the hell is that not working...
-          increment'' :: Eff (EffectRegistryEff Int Callback :+: IncrementEff :+: effs) Int
-          increment'' =  liftOfDespairF increment (Proxy @(EffectRegistryEff Int Callback))

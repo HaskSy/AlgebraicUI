@@ -23,6 +23,7 @@ dependencies:
   - containers
   - pretty
   - GenericPretty
+  - stm
 
 default-extensions:
   - AllowAmbiguousTypes
